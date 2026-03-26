@@ -1,0 +1,40 @@
+# --- QuestaSim / ModelSim ---
+vsim.wlf
+vsim_stacktrace.vstk
+transcript
+modelsim.ini
+*.vstk
+*.wlf
+covhtmlreport/
+checkpoints/
+
+# --- Compiled Libraries ---
+work/
+msim_lib/
+*.lib
+*.pdb
+*.exp
+
+# --- Waveform & Debug Files ---
+*.vcd
+*.evcd
+*.fsdb
+*.shm/
+*.dsn
+*.trn
+
+# --- General Tool Logs & Temp Files ---
+*.log
+*.jou
+*.txt
+# Note: Keep specific documentation .txt files, but ignore tool-generated ones
+!README.txt
+
+# --- Synthesis & Implementation (Vivado/Quartus) ---
+.Xil/
+*.jou
+*.log
+*.pb
+*.bit
+*.mcs
+*.ip_user_files/
