@@ -8,7 +8,7 @@ module systolic_4x4 #(parameter DW=8, AW=32, N=4)(
 );
 
   // Internal wires: act[row][col], psum[row+1][col]
-  wire signed [DW-1:0] act  [0:N][0:N-1];
+  wire signed [DW-1:0] act  [0:N-1][0:N];
   wire signed [AW-1:0] psum [0:N][0:N-1];
 
   genvar i, j;

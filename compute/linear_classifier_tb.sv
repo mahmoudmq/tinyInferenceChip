@@ -1,208 +1,383 @@
 `timescale 1ns/1ps
 
+// linear_classifier_tb.sv — Self-Checking Testbench for Linear Classifier
+// Runs 5 test cases with automated PASS/FAIL checking.
+// Compatible with QuestaSim: vlog + vsim -c -do "run -all"
+//
+// Test cases:
+//   1. Basic classification   — hand-computed W·x with mixed signs
+//   2. Identity weight matrix — y = I·x = x (passthrough)
+//   3. Negative weights       — verify signed arithmetic
+//   4. Zero input vector      — all scores must be 0
+//   5. Targeted argmax        — one class deliberately dominant
+
 module linear_classifier_tb;
 
+    // ─── Parameters ──────────────────────────────────────────────
     localparam DW = 8;
     localparam AW = 32;
     localparam N  = 4;
+    localparam CLK_PERIOD = 10;
 
-    //-------------------------------------------------------
-    // DUT Signals
-    //-------------------------------------------------------
+    // ─── DUT Signals ─────────────────────────────────────────────
+    reg                       clk;
+    reg                       rst_n;
 
-    reg clk;
-    reg rst_n;
-    reg load_weight;
+    reg                       wr_weight;
+    reg  [1:0]                wr_w_row;
+    reg  [1:0]                wr_w_col;
+    reg  signed [DW-1:0]      wr_w_data;
 
-    reg signed [DW-1:0] weights [0:N-1][0:N-1];
-    reg signed [DW-1:0] act_in  [0:N-1];
+    reg                       wr_input;
+    reg  [1:0]                wr_i_addr;
+    reg  signed [DW-1:0]      wr_i_data;
 
-    wire signed [AW-1:0] psum_out [0:N-1];
+    reg                       start;
 
-    //-------------------------------------------------------
-    // DUT
-    //-------------------------------------------------------
+    wire signed [AW-1:0]      scores [0:N-1];
+    wire [1:0]                predicted_class;
+    wire                      done;
 
-    systolic_4x4 #(
-        .DW(DW),
-        .AW(AW),
-        .N(N)
+    // ─── DUT Instantiation ───────────────────────────────────────
+
+    linear_classifier #(
+        .DW(DW), .AW(AW), .N(N)
     ) dut (
-        .clk(clk),
-        .rst_n(rst_n),
-        .load_weight(load_weight),
-        .weights(weights),
-        .act_in(act_in),
-        .psum_out(psum_out)
+        .clk             (clk),
+        .rst_n           (rst_n),
+        .wr_weight       (wr_weight),
+        .wr_w_row        (wr_w_row),
+        .wr_w_col        (wr_w_col),
+        .wr_w_data       (wr_w_data),
+        .wr_input        (wr_input),
+        .wr_i_addr       (wr_i_addr),
+        .wr_i_data       (wr_i_data),
+        .start           (start),
+        .scores          (scores),
+        .predicted_class (predicted_class),
+        .done            (done)
     );
 
-    //-------------------------------------------------------
-    // Clock
-    //-------------------------------------------------------
-
+    // ─── Clock Generation ────────────────────────────────────────
     initial clk = 0;
-    always #5 clk = ~clk;
+    always #(CLK_PERIOD/2) clk = ~clk;
 
-    //-------------------------------------------------------
-    // Expected Results
-    //-------------------------------------------------------
+    // ─── Test Infrastructure ─────────────────────────────────────
+    integer total_errors;
+    integer test_errors;
+    integer test_num;
 
-    integer expected [0:3];
+    // ─── Helper Tasks ────────────────────────────────────────────
 
-    integer errors;
-    
-    integer max_idx;
-    integer max_val;
+    task automatic do_reset;
+        begin
+            rst_n     = 0;
+            start     = 0;
+            wr_weight = 0;
+            wr_input  = 0;
+            wr_w_row  = 0;
+            wr_w_col  = 0;
+            wr_w_data = 0;
+            wr_i_addr = 0;
+            wr_i_data = 0;
+            repeat (3) @(posedge clk);
+            rst_n = 1;
+            @(posedge clk);
+        end
+    endtask
 
-    //-------------------------------------------------------
-    // Test
-    //-------------------------------------------------------
+    task automatic write_weight(
+        input [1:0]          row,
+        input [1:0]          col,
+        input signed [DW-1:0] data
+    );
+        begin
+            @(posedge clk);
+            wr_weight = 1;
+            wr_w_row  = row;
+            wr_w_col  = col;
+            wr_w_data = data;
+            @(posedge clk);
+            wr_weight = 0;
+        end
+    endtask
+
+    task automatic write_input(
+        input [1:0]          addr,
+        input signed [DW-1:0] data
+    );
+        begin
+            @(posedge clk);
+            wr_input  = 1;
+            wr_i_addr = addr;
+            wr_i_data = data;
+            @(posedge clk);
+            wr_input  = 0;
+        end
+    endtask
+
+    task automatic run_and_wait;
+        begin
+            @(posedge clk);
+            start = 1;
+            @(posedge clk);
+            start = 0;
+            // Wait for done
+            wait (done === 1);
+            @(posedge clk);
+        end
+    endtask
+
+    task automatic check_scores(
+        input integer exp0,
+        input integer exp1,
+        input integer exp2,
+        input integer exp3,
+        input integer exp_class
+    );
+        integer exp [0:3];
+        integer i;
+        begin
+            exp[0] = exp0;
+            exp[1] = exp1;
+            exp[2] = exp2;
+            exp[3] = exp3;
+
+            for (i = 0; i < 4; i = i + 1) begin
+                if (scores[i] !== exp[i]) begin
+                    $display("  [FAIL] Score[%0d]: expected %0d, got %0d", i, exp[i], scores[i]);
+                    test_errors = test_errors + 1;
+                end else begin
+                    $display("  [PASS] Score[%0d] = %0d", i, scores[i]);
+                end
+            end
+
+            if (predicted_class !== exp_class[1:0]) begin
+                $display("  [FAIL] Predicted class: expected %0d, got %0d", exp_class, predicted_class);
+                test_errors = test_errors + 1;
+            end else begin
+                $display("  [PASS] Predicted class = %0d", predicted_class);
+            end
+        end
+    endtask
+
+    // ─── Main Test Sequence ──────────────────────────────────────
 
     initial begin
 
-        errors = 0;
+        total_errors = 0;
+        test_num     = 0;
 
         $display("");
-        $display("====================================================");
-        $display("        4x4 LINEAR CLASSIFIER VERIFICATION");
-        $display("====================================================");
+        $display("================================================================");
+        $display("         LINEAR CLASSIFIER — SELF-CHECKING TESTBENCH");
+        $display("================================================================");
 
-        //---------------------------------------------
-        // Reset
-        //---------------------------------------------
+        // ═══════════════════════════════════════════════════════════
+        // TEST 1: Basic classification
+        //   W = [[1,2,5,0],[6,0,0,1],[3,4,-1,5],[2,2,6,0]]
+        //   x = [8, 2, 15, 0]
+        //   y[j] = Σ_i x[i]*W[i][j]
+        //   y[0] = 8*1  + 2*6  + 15*3  + 0*2  = 8+12+45+0   = 65
+        //   y[1] = 8*2  + 2*0  + 15*4  + 0*2  = 16+0+60+0   = 76
+        //   y[2] = 8*5  + 2*0  + 15*(-1)+0*6  = 40+0-15+0   = 25
+        //   y[3] = 8*0  + 2*1  + 15*5  + 0*0  = 0+2+75+0    = 77
+        //   argmax = 3 (score 77)
+        // ═══════════════════════════════════════════════════════════
 
-        rst_n = 0;
-        load_weight = 0;
+        test_num = 1;
+        test_errors = 0;
+        $display("");
+        $display("─── TEST %0d: Basic Classification ───", test_num);
 
-        repeat(3) @(posedge clk);
+        do_reset();
 
-        rst_n = 1;
+        // Load weights row by row
+        write_weight(0, 0, 8'd1);  write_weight(0, 1, 8'd2);
+        write_weight(0, 2, 8'd5);  write_weight(0, 3, 8'd0);
+        write_weight(1, 0, 8'd6);  write_weight(1, 1, 8'd0);
+        write_weight(1, 2, 8'd0);  write_weight(1, 3, 8'd1);
+        write_weight(2, 0, 8'd3);  write_weight(2, 1, 8'd4);
+        write_weight(2, 2, -8'sd1); write_weight(2, 3, 8'd5);
+        write_weight(3, 0, 8'd2);  write_weight(3, 1, 8'd2);
+        write_weight(3, 2, 8'd6);  write_weight(3, 3, 8'd0);
 
-        $display("[PASS] Reset complete");
+        // Load input features
+        write_input(0, 8'd8);
+        write_input(1, 8'd2);
+        write_input(2, 8'd15);
+        write_input(3, 8'd0);
 
-        //---------------------------------------------
-        // Load Weight Matrix
-        //
-        // Classes:
-        // 0,1,7,8
-        //---------------------------------------------
+        // Run classification
+        run_and_wait();
 
-        weights[0][0]=1;
-        weights[0][1]=2;
-        weights[0][2]=5;
-        weights[0][3]=0;
+        // Check results
+        //                   s0  s1  s2  s3  class
+        check_scores(       65,  76,  25,  77,   3);
 
-        weights[1][0]=6;
-        weights[1][1]=0;
-        weights[1][2]=0;
-        weights[1][3]=1;
+        total_errors = total_errors + test_errors;
 
-        weights[2][0]=3;
-        weights[2][1]=4;
-        weights[2][2]=-1;
-        weights[2][3]=5;
+        // ═══════════════════════════════════════════════════════════
+        // TEST 2: Identity weight matrix — y = x
+        //   W = I4, x = [3, -7, 10, 1]
+        //   Expected: y = [3, -7, 10, 1], argmax = 2
+        // ═══════════════════════════════════════════════════════════
 
-        weights[3][0]=2;
-        weights[3][1]=2;
-        weights[3][2]=6;
-        weights[3][3]=0;
+        test_num = 2;
+        test_errors = 0;
+        $display("");
+        $display("─── TEST %0d: Identity Weight Matrix ───", test_num);
 
-        load_weight = 1;
-        @(posedge clk);
-        load_weight = 0;
+        do_reset();
 
-        $display("[PASS] Weights loaded");
+        // Identity matrix
+        write_weight(0, 0, 8'd1);  write_weight(0, 1, 8'd0);
+        write_weight(0, 2, 8'd0);  write_weight(0, 3, 8'd0);
+        write_weight(1, 0, 8'd0);  write_weight(1, 1, 8'd1);
+        write_weight(1, 2, 8'd0);  write_weight(1, 3, 8'd0);
+        write_weight(2, 0, 8'd0);  write_weight(2, 1, 8'd0);
+        write_weight(2, 2, 8'd1);  write_weight(2, 3, 8'd0);
+        write_weight(3, 0, 8'd0);  write_weight(3, 1, 8'd0);
+        write_weight(3, 2, 8'd0);  write_weight(3, 3, 8'd1);
 
-        //---------------------------------------------
-        // Feature Vector
-        //
-        // vertical
-        // horizontal
-        // loop
-        // diagonal
-        //---------------------------------------------
+        write_input(0,  8'sd3);
+        write_input(1, -8'sd7);
+        write_input(2,  8'sd10);
+        write_input(3,  8'sd1);
 
-        act_in[0] = 8;
-        act_in[1] = 2;
-        act_in[2] = 15;
-        act_in[3] = 0;
+        run_and_wait();
 
-        $display("[PASS] Feature vector applied");
+        check_scores(3, -7, 10, 1, 2);
 
-        //---------------------------------------------
-        // Wait for pipeline latency
-        //---------------------------------------------
+        total_errors = total_errors + test_errors;
 
-        repeat(7) @(posedge clk);
+        // ═══════════════════════════════════════════════════════════
+        // TEST 3: Negative weights — verify signed arithmetic
+        //   W = [[-1,-2,-3,-4],
+        //        [ 2, 3, 4, 5],
+        //        [-1, 0, 1, 0],
+        //        [ 0,-1, 0, 1]]
+        //   x = [4, 2, 6, 3]
+        //   y[0] = 4*(-1)+2*2+6*(-1)+3*0   = -4+4-6+0     = -6
+        //   y[1] = 4*(-2)+2*3+6*0+3*(-1)   = -8+6+0-3     = -5
+        //   y[2] = 4*(-3)+2*4+6*1+3*0      = -12+8+6+0    = 2
+        //   y[3] = 4*(-4)+2*5+6*0+3*1      = -16+10+0+3   = -3
+        //   argmax = 2
+        // ═══════════════════════════════════════════════════════════
 
-        //---------------------------------------------
-        // Expected values
-        //---------------------------------------------
+        test_num = 3;
+        test_errors = 0;
+        $display("");
+        $display("─── TEST %0d: Negative Weights ───", test_num);
 
-        expected[0] = 87;
-        expected[1] = 48;
-        expected[2] = 17;
-        expected[3] = 110;
+        do_reset();
 
-        //---------------------------------------------
-        // Print Results
-        //---------------------------------------------
+        write_weight(0, 0, -8'sd1); write_weight(0, 1, -8'sd2);
+        write_weight(0, 2, -8'sd3); write_weight(0, 3, -8'sd4);
+        write_weight(1, 0,  8'sd2); write_weight(1, 1,  8'sd3);
+        write_weight(1, 2,  8'sd4); write_weight(1, 3,  8'sd5);
+        write_weight(2, 0, -8'sd1); write_weight(2, 1,  8'sd0);
+        write_weight(2, 2,  8'sd1); write_weight(2, 3,  8'sd0);
+        write_weight(3, 0,  8'sd0); write_weight(3, 1, -8'sd1);
+        write_weight(3, 2,  8'sd0); write_weight(3, 3,  8'sd1);
+
+        write_input(0, 8'sd4);
+        write_input(1, 8'sd2);
+        write_input(2, 8'sd6);
+        write_input(3, 8'sd3);
+
+        run_and_wait();
+
+        check_scores(-6, -5, 2, -3, 2);
+
+        total_errors = total_errors + test_errors;
+
+        // ═══════════════════════════════════════════════════════════
+        // TEST 4: Zero input vector — all scores must be 0
+        //   W = (same as test 1), x = [0, 0, 0, 0]
+        //   Expected: y = [0, 0, 0, 0], argmax = 0 (first max)
+        // ═══════════════════════════════════════════════════════════
+
+        test_num = 4;
+        test_errors = 0;
+        $display("");
+        $display("─── TEST %0d: Zero Input Vector ───", test_num);
+
+        do_reset();
+
+        write_weight(0, 0, 8'd1);  write_weight(0, 1, 8'd2);
+        write_weight(0, 2, 8'd5);  write_weight(0, 3, 8'd0);
+        write_weight(1, 0, 8'd6);  write_weight(1, 1, 8'd0);
+        write_weight(1, 2, 8'd0);  write_weight(1, 3, 8'd1);
+        write_weight(2, 0, 8'd3);  write_weight(2, 1, 8'd4);
+        write_weight(2, 2, -8'sd1); write_weight(2, 3, 8'd5);
+        write_weight(3, 0, 8'd2);  write_weight(3, 1, 8'd2);
+        write_weight(3, 2, 8'd6);  write_weight(3, 3, 8'd0);
+
+        write_input(0, 8'd0);
+        write_input(1, 8'd0);
+        write_input(2, 8'd0);
+        write_input(3, 8'd0);
+
+        run_and_wait();
+
+        check_scores(0, 0, 0, 0, 0);
+
+        total_errors = total_errors + test_errors;
+
+        // ═══════════════════════════════════════════════════════════
+        // TEST 5: Targeted argmax — class 1 dominant
+        //   W = [[0, 10, 0, 0],
+        //        [0, 10, 0, 0],
+        //        [0, 10, 0, 0],
+        //        [0, 10, 0, 0]]
+        //   x = [1, 1, 1, 1]
+        //   y[0]=0, y[1]=40, y[2]=0, y[3]=0
+        //   argmax = 1
+        // ═══════════════════════════════════════════════════════════
+
+        test_num = 5;
+        test_errors = 0;
+        $display("");
+        $display("─── TEST %0d: Targeted Argmax (Class 1 Dominant) ───", test_num);
+
+        do_reset();
+
+        write_weight(0, 0, 8'd0);  write_weight(0, 1, 8'd10);
+        write_weight(0, 2, 8'd0);  write_weight(0, 3, 8'd0);
+        write_weight(1, 0, 8'd0);  write_weight(1, 1, 8'd10);
+        write_weight(1, 2, 8'd0);  write_weight(1, 3, 8'd0);
+        write_weight(2, 0, 8'd0);  write_weight(2, 1, 8'd10);
+        write_weight(2, 2, 8'd0);  write_weight(2, 3, 8'd0);
+        write_weight(3, 0, 8'd0);  write_weight(3, 1, 8'd10);
+        write_weight(3, 2, 8'd0);  write_weight(3, 3, 8'd0);
+
+        write_input(0, 8'd1);
+        write_input(1, 8'd1);
+        write_input(2, 8'd1);
+        write_input(3, 8'd1);
+
+        run_and_wait();
+
+        check_scores(0, 40, 0, 0, 1);
+
+        total_errors = total_errors + test_errors;
+
+        // ═══════════════════════════════════════════════════════════
+        // FINAL REPORT
+        // ═══════════════════════════════════════════════════════════
 
         $display("");
-        $display("---------------- RESULTS ----------------");
-
-        for (int i=0;i<4;i++) begin
-
-            $display("Class %0d : Expected = %0d | Actual = %0d",
-                     i,
-                     expected[i],
-                     psum_out[i]);
-
-            if (psum_out[i] !== expected[i]) begin
-                $display("   --> FAIL");
-                errors = errors + 1;
-            end
-            else begin
-                $display("   --> PASS");
-            end
-
-        end
-
-        //---------------------------------------------
-        // Prediction
-        //---------------------------------------------
-
-
-        max_idx = 0;
-        max_val = psum_out[0];
-
-        for(int i=1;i<4;i++) begin
-            if(psum_out[i] > max_val) begin
-                max_val = psum_out[i];
-                max_idx = i;
-            end
-        end
-
-        $display("");
-        $display("Predicted Class = %0d", max_idx);
-
-        //---------------------------------------------
-        // Final Report
-        //---------------------------------------------
-
-        $display("");
-        $display("====================================================");
-
-        if(errors==0)
-            $display("ALL TESTS PASSED");
+        $display("================================================================");
+        if (total_errors == 0)
+            $display("  ALL %0d TESTS PASSED", test_num);
         else
-            $display("%0d TEST(S) FAILED", errors);
-
-        $display("====================================================");
+            $display("  FAILED — %0d error(s) across %0d tests", total_errors, test_num);
+        $display("================================================================");
+        $display("");
 
         #20;
         $finish;
-
     end
 
 endmodule
