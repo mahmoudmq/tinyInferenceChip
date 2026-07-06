@@ -112,10 +112,10 @@ However, in our **Linear Classifier Core**, we are computing a single vector-mat
 ```mermaid
 graph TD
     %% Inputs
-    in0((x[0])) --> PE00
-    in1((x[1])) --> PE10
-    in2((x[2])) --> PE20
-    in3((x[3])) --> PE30
+    in0(("x[0]")) --> PE00
+    in1(("x[1]")) --> PE10
+    in2(("x[2]")) --> PE20
+    in3(("x[3]")) --> PE30
 
     %% Row 0
     PE00[PE 0,0] -->|act| PE01[PE 0,1]
@@ -144,10 +144,10 @@ graph TD
     PE20 -->|psum| PE30; PE21 -->|psum| PE31; PE22 -->|psum| PE32; PE23 -->|psum| PE33
 
     %% Outputs
-    PE30 ==> psum_out0[[y[0]]]
-    PE31 ==> psum_out1[[y[1]]]
-    PE32 ==> psum_out2[[y[2]]]
-    PE33 ==> psum_out3[[y[3]]]
+    PE30 ==> psum_out0[["y[0]"]]
+    PE31 ==> psum_out1[["y[1]"]]
+    PE32 ==> psum_out2[["y[2]"]]
+    PE33 ==> psum_out3[["y[3]"]]
     
     classDef pe fill:#6c5ce7,stroke:#a29bfe,stroke-width:2px,color:white;
     class PE00,PE01,PE02,PE03,PE10,PE11,PE12,PE13,PE20,PE21,PE22,PE23,PE30,PE31,PE32,PE33 pe;
